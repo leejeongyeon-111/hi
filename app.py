@@ -4,7 +4,6 @@ import pandas as pd
 import plotly.express as px
 import folium
 from streamlit_folium import st_folium
-from branca.colormap import linear
 
 # -----------------------------
 # 1. 서울시 25개 구 중심 좌표
@@ -79,50 +78,50 @@ else:
 # -----------------------------
 # 5. 서울 지도 시각화
 # -----------------------------
-st.subheader("🗺️ 서울특별시 지역별 장애인 콜택시 수요 분포 지도")
+st.subheader("🗺️ 서울특별시 지역별 장애인 콜택시 수요 지도")
 
 SEOUL_CENTER = [37.5665, 126.9780]
 m = folium.Map(
     location=SEOUL_CENTER,
-    zoom_start=11.3,        # 서울 전체만 딱 보이게 설정
+    zoom_start=11.3,
     min_zoom=10.5,
     max_zoom=12.5,
-    control_scale=True
+    tiles="cartodbpositron"  # 밝은 톤 지도 배경
 )
 
-# 지역별 호출 수
 region_counts = df_taxi[region_col].value_counts().reset_index()
 region_counts.columns = ["region", "count"]
 
-# 색상 맵 (수요량에 따라 색상 단계)
-colormap = linear.YlOrRd_09.scale(region_counts["count"].min(), region_counts["count"].max())
-colormap.caption = "콜택시 호출 수"
-colormap.add_to(m)
+# 대비를 높이기 위해 파란~보라 색상 단계 지정
+import matplotlib.cm as cm
+import matplotlib.colors as colors
 
-# 각 구별 CircleMarker 표시
+colormap = cm.get_cmap("PuBu")  # 파랑 계열
+norm = colors.Normalize(vmin=region_counts["count"].min(), vmax=region_counts["count"].max())
+
 for _, row in region_counts.iterrows():
     region = row["region"]
     count = row["count"]
     if region in SEOUL_GU_COORDS:
         lat, lon = SEOUL_GU_COORDS[region]
-        color = colormap(count)
+        color = colors.to_hex(colormap(norm(count)))
         folium.CircleMarker(
             location=[lat, lon],
-            radius=max(5, count / region_counts["count"].max() * 20),
+            radius=max(6, count / region_counts["count"].max() * 20),
             color=color,
             fill=True,
             fill_color=color,
-            fill_opacity=0.8,
+            fill_opacity=0.85,
             popup=f"{region} : {count}건"
         ).add_to(m)
 
-# 차고지 마커 추가
+# 차고지 마커 표시 (파란 아이콘)
 if "위도" in df_garage.columns and "경도" in df_garage.columns:
     for _, row in df_garage.iterrows():
         folium.Marker(
             [row["위도"], row["경도"]],
             popup=row.get("차고지명", "차고지"),
-            icon=folium.Icon(color="blue", icon="car", prefix="fa")
+            icon=folium.Icon(color="darkblue", icon="car", prefix="fa")
         ).add_to(m)
 
 st_folium(m, width=900, height=600)
