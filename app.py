@@ -4,8 +4,11 @@ import plotly.express as px
 import folium
 from streamlit_folium import st_folium
 from branca.colormap import linear
+
+# Geocoding을 위한 라이브러리 추가
+import time
 from geopy.geocoders import Nominatim
-from geopy.extra.rate_limiter import RateLimiter
+from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
 
 # -----------------------------
 # 1. 서울시 25개 구 중심 좌표
@@ -39,49 +42,91 @@ SEOUL_GU_COORDS = {
 }
 
 # -----------------------------
-# 2. 데이터 불러오기
+# 2. 데이터 불러오기 (Geocoding 포함)
 # -----------------------------
 @st.cache_data
 def load_data():
+    df_taxi = None
+    df_garage = None
+    
     try:
         df_taxi = pd.read_csv("seoul_taxi_SAMPLE_500.csv")
-        df_garage = pd.read_csv("info.csv")
-        return df_taxi, df_garage
     except FileNotFoundError:
-        st.error("⚠️ CSV 파일을 찾을 수 없습니다. 파일 경로를 확인하세요.")
-        return None, None
+        st.error("⚠️ 'seoul_taxi_SAMPLE_500.csv' 파일을 찾을 수 없습니다.")
+    
+    try:
+        # === 수정: 업로드된 파일명으로 변경 ===
+        df_garage = pd.read_csv("info.csv")
+    except FileNotFoundError:
+        st.error("⚠️ '서울시설공단_장애인콜택시 차고지 정보_20250724.csv' 파일을 찾을 수 없습니다.")
+
+    # === 수정: 차고지 데이터가 있을 경우 Geocoding 수행 ===
+    if df_garage is not None:
+        geolocator = Nominatim(user_agent="seoul-taxi-dashboard-app")
+        
+        latitudes = []
+        longitudes = []
+        
+        # 주소 컬럼 찾기 ('상세주소' 또는 '주소' 포함)
+        address_col = next((c for c in df_garage.columns if "주소" in c), None)
+        if not address_col:
+            st.error("⚠️ 차고지 파일에서 '주소' 관련 컬럼을 찾을 수 없습니다.")
+            return df_taxi, None
+        
+        # Geocoding이 느리므로 진행 상황 표시
+        progress_bar = st.progress(0, text="차고지 주소 변환 중... (첫 실행 시 시간이 소요됩니다)")
+        
+        for i, address in enumerate(df_garage[address_col]):
+            try:
+                # '서울'을 추가하여 검색 정확도 향상
+                location = geolocator.geocode(f"서울 {address}", timeout=5) 
+                
+                if location:
+                    latitudes.append(location.latitude)
+                    longitudes.append(location.longitude)
+                else:
+                    latitudes.append(None)
+                    longitudes.append(None)
+            
+            except (GeocoderTimedOut, GeocoderUnavailable):
+                latitudes.append(None)
+                longitudes.append(None)
+            
+            # Nominatim 서버 과부하 방지를 위한 Rate limiting
+            time.sleep(0.5) 
+            progress_bar.progress((i + 1) / len(df_garage), text=f"차고지 주소 변환 중... ({i+1}/{len(df_garage)})")
+
+        progress_bar.empty()
+        
+        df_garage['latitude'] = latitudes
+        df_garage['longitude'] = longitudes
+        
+        # Geocoding 실패한 주소는 제외
+        df_garage_geocoded = df_garage.dropna(subset=['latitude', 'longitude'])
+        
+        failed_count = len(df_garage) - len(df_garage_geocoded)
+        if failed_count > 0:
+            st.warning(f"총 {len(df_garage)}개 차고지 중 {failed_count}개의 주소를 변환하지 못했습니다.")
+        
+        return df_taxi, df_garage_geocoded
+    
+    return df_taxi, None # 차고지 파일 로드 실패 시
 
 # -----------------------------
-# 3. 주소 → 위도·경도 변환 함수
+# 3. Streamlit 설정
 # -----------------------------
-@st.cache_data
-def geocode_addresses(addresses):
-    geolocator = Nominatim(user_agent="seoul_garages")
-    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
-    coords = {}
-    for addr in addresses:
-        try:
-            loc = geocode(addr)
-            if loc:
-                coords[addr] = (loc.latitude, loc.longitude)
-            else:
-                coords[addr] = None
-        except Exception:
-            coords[addr] = None
-    return coords
-
-# -----------------------------
-# 4. Streamlit 설정
-# -----------------------------
-st.set_page_config(page_title="서울시 장애인 콜택시 대시보드", layout="wide")
+st.set_page_config(page_title="서울시 장애인 콜택시 수요·공급 대시보드", layout="wide")
 st.title("🚕 서울특별시 장애인 콜택시 수요·공급 통합 대시보드")
 
 df_taxi, df_garage = load_data()
-if df_taxi is None or df_garage is None:
+
+# === 수정: 택시 데이터(수요)가 없으면 중지 ===
+if df_taxi is None:
+    st.warning("택시 수요 데이터를 불러올 수 없어 대시보드를 중지합니다.")
     st.stop()
 
 # -----------------------------
-# 5. 데이터 전처리
+# 4. 데이터 전처리
 # -----------------------------
 datetime_col = next((c for c in df_taxi.columns if "일시" in c or "시간" in c), None)
 if datetime_col:
@@ -97,7 +142,7 @@ else:
     st.stop()
 
 # -----------------------------
-# 6. 지도 생성
+# 5. 지도 시각화 (수요 + 공급)
 # -----------------------------
 st.subheader("🗺️ 서울특별시 장애인 콜택시 수요(원) vs 공급(차고지) 지도")
 
@@ -112,7 +157,7 @@ colormap = linear.Blues_09.scale(region_counts["count"].min(), region_counts["co
 colormap.caption = "콜택시 호출 수 (수요)"
 colormap.add_to(m)
 
-# ✅ 수요 원 표시
+# ✅ 수요 원 표시 (확대 반영)
 for _, row in region_counts.iterrows():
     region = row["region"]
     count = row["count"]
@@ -130,31 +175,34 @@ for _, row in region_counts.iterrows():
             popup=f"📍 {region}\n수요: {count}건"
         ).add_to(m)
 
-# ✅ 공급(차고지) 표시 (주소 기반)
-if "주소" in df_garage.columns:
-    addr_list = df_garage["주소"].dropna().unique().tolist()
-    coords_dict = geocode_addresses(addr_list)
-
+# === 수정: 공급(차고지) 정확한 위치(Geocoding) 표시 ===
+if df_garage is not None:
+    # 차고지명, 주차대수 컬럼 자동 찾기
+    name_col = next((c for c in df_garage.columns if "명" in c or "차고지" in c or "센터" in c), "차고지명")
+    parking_col = next((c for c in df_garage.columns if "주차" in c), None)
+    
     for _, row in df_garage.iterrows():
-        name = row.get("차고지명", "차고지")
-        addr = row.get("주소", "")
-        cars = row.get("주차대수", "정보없음")
-
-        coord = coords_dict.get(addr)
-        if coord:
-            lat, lon = coord
-            folium.Marker(
-                [lat, lon],
-                popup=f"🚗 {name}<br>📍 {addr}<br>🚘 주차대수: {cars}",
-                icon=folium.Icon(color="darkblue", icon="car", prefix="fa")
-            ).add_to(m)
-else:
-    st.warning("⚠️ '주소' 컬럼을 찾을 수 없습니다. 파일을 확인하세요.")
+        # load_data에서 NaN이 필터링되었으므로 바로 사용
+        lat = row['latitude']
+        lon = row['longitude']
+        
+        # 팝업 텍스트 구성
+        name = str(row[name_col]) if name_col in row else "차고지"
+        popup_text = f"🚗 <b>{name}</b>"
+        if parking_col and pd.notna(row[parking_col]):
+            popup_text += f"<br>주차대수: {int(row[parking_col])}대"
+        
+        folium.Marker(
+            [lat, lon],
+            popup=folium.Popup(popup_text, max_width=200),
+            tooltip=name,
+            icon=folium.Icon(color="darkblue", icon="car", prefix="fa")
+        ).add_to(m)
 
 st_folium(m, width=950, height=600)
 
 # -----------------------------
-# 7. 통계 시각화
+# 6. 통계 시각화 (Plotly)
 # -----------------------------
 st.subheader("📊 시간대별 / 요일별 / 지역별 수요 분석")
 
