@@ -1,9 +1,9 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import folium
 from streamlit_folium import st_folium
+from branca.colormap import linear
 
 # -----------------------------
 # 1. 서울시 25개 구 중심 좌표
@@ -52,8 +52,8 @@ def load_data():
 # -----------------------------
 # 3. Streamlit 설정
 # -----------------------------
-st.set_page_config(page_title="서울시 장애인 콜택시 대시보드", layout="wide")
-st.title("🚕 서울특별시 장애인 콜택시 수요·공급 대시보드")
+st.set_page_config(page_title="서울시 장애인 콜택시 수요·공급 대시보드", layout="wide")
+st.title("🚕 서울특별시 장애인 콜택시 수요·공급 통합 대시보드")
 
 df_taxi, df_garage = load_data()
 if df_taxi is None or df_garage is None:
@@ -76,9 +76,9 @@ else:
     st.stop()
 
 # -----------------------------
-# 5. 서울 지도 시각화
+# 5. 지도 시각화 (수요 + 공급)
 # -----------------------------
-st.subheader("🗺️ 서울특별시 지역별 장애인 콜택시 수요 지도")
+st.subheader("🗺️ 서울특별시 장애인 콜택시 수요(원) vs 공급(차고지) 지도")
 
 SEOUL_CENTER = [37.5665, 126.9780]
 m = folium.Map(
@@ -86,48 +86,56 @@ m = folium.Map(
     zoom_start=11.3,
     min_zoom=10.5,
     max_zoom=12.5,
-    tiles="cartodbpositron"  # 밝은 톤 지도 배경
+    tiles="cartodbpositron"
 )
 
+# 수요 집계
 region_counts = df_taxi[region_col].value_counts().reset_index()
 region_counts.columns = ["region", "count"]
 
-# 대비를 높이기 위해 파란~보라 색상 단계 지정
-import matplotlib.cm as cm
-import matplotlib.colors as colors
+# 색상 팔레트
+colormap = linear.Blues_09.scale(region_counts["count"].min(), region_counts["count"].max())
+colormap.caption = "콜택시 호출 수 (수요)"
+colormap.add_to(m)
 
-colormap = cm.get_cmap("PuBu")  # 파랑 계열
-norm = colors.Normalize(vmin=region_counts["count"].min(), vmax=region_counts["count"].max())
-
+# ✅ 수요 원 표시 (크기 확대)
 for _, row in region_counts.iterrows():
     region = row["region"]
     count = row["count"]
     if region in SEOUL_GU_COORDS:
         lat, lon = SEOUL_GU_COORDS[region]
-        color = colors.to_hex(colormap(norm(count)))
+        color = colormap(count)
+        radius = max(8, min(35, count / region_counts["count"].max() * 36))
         folium.CircleMarker(
             location=[lat, lon],
-            radius=max(6, count / region_counts["count"].max() * 20),
-            color=color,
+            radius=radius,
+            color="black",
             fill=True,
             fill_color=color,
-            fill_opacity=0.85,
-            popup=f"{region} : {count}건"
+            fill_opacity=0.9,
+            popup=f"📍 {region}\n수요: {count}건"
         ).add_to(m)
 
-# 차고지 마커 표시 (파란 아이콘)
-if "위도" in df_garage.columns and "경도" in df_garage.columns:
+# ✅ 공급(차고지) 위치 표시 — 지역명 기반 좌표 매칭
+garage_region_col = next((c for c in df_garage.columns if "지역" in c or "구" in c), None)
+if garage_region_col:
     for _, row in df_garage.iterrows():
-        folium.Marker(
-            [row["위도"], row["경도"]],
-            popup=row.get("차고지명", "차고지"),
-            icon=folium.Icon(color="darkblue", icon="car", prefix="fa")
-        ).add_to(m)
+        region = str(row[garage_region_col]).replace(" ", "")
+        name = row.get("차고지명", "차고지")
+        if region in SEOUL_GU_COORDS:
+            lat, lon = SEOUL_GU_COORDS[region]
+            folium.Marker(
+                [lat, lon],
+                popup=f"🚗 {name} ({region})",
+                icon=folium.Icon(color="darkblue", icon="car", prefix="fa")
+            ).add_to(m)
+else:
+    st.warning("⚠️ 차고지 데이터에 지역명이 없습니다.")
 
-st_folium(m, width=900, height=600)
+st_folium(m, width=950, height=600)
 
 # -----------------------------
-# 6. 통계 시각화
+# 6. 통계 시각화 (Plotly)
 # -----------------------------
 st.subheader("📊 시간대별 / 요일별 / 지역별 수요 분석")
 
