@@ -5,13 +5,13 @@ import folium
 from streamlit_folium import st_folium
 from branca.colormap import linear
 
-# Geocoding을 위한 라이브러리 추가
+# Geocoding(주소->좌표)을 위한 라이브러리 추가
 import time
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
 
 # -----------------------------
-# 1. 서울시 25개 구 중심 좌표
+# 1. 서울시 25개 구 중심 좌표 (수요 집계용)
 # -----------------------------
 SEOUL_GU_COORDS = {
     "종로구": [37.573050, 126.979189],
@@ -49,18 +49,20 @@ def load_data():
     df_taxi = None
     df_garage = None
     
+    # 1. 택시 수요 데이터 로드
     try:
         df_taxi = pd.read_csv("seoul_taxi_SAMPLE_500.csv")
     except FileNotFoundError:
         st.error("⚠️ 'seoul_taxi_SAMPLE_500.csv' 파일을 찾을 수 없습니다.")
     
+    # 2. 차고지 공급 데이터 로드
     try:
-        # === 수정: 업로드된 파일명으로 변경 ===
+        # 업로드된 파일명으로 변경
         df_garage = pd.read_csv("info.csv")
     except FileNotFoundError:
         st.error("⚠️ '서울시설공단_장애인콜택시 차고지 정보_20250724.csv' 파일을 찾을 수 없습니다.")
 
-    # === 수정: 차고지 데이터가 있을 경우 Geocoding 수행 ===
+    # 3. 차고지 데이터가 있을 경우 Geocoding 수행
     if df_garage is not None:
         geolocator = Nominatim(user_agent="seoul-taxi-dashboard-app")
         
@@ -120,13 +122,13 @@ st.title("🚕 서울특별시 장애인 콜택시 수요·공급 통합 대시�
 
 df_taxi, df_garage = load_data()
 
-# === 수정: 택시 데이터(수요)가 없으면 중지 ===
+# 택시 데이터(수요)가 없으면 중지
 if df_taxi is None:
     st.warning("택시 수요 데이터를 불러올 수 없어 대시보드를 중지합니다.")
     st.stop()
 
 # -----------------------------
-# 4. 데이터 전처리
+# 4. 데이터 전처리 (수요)
 # -----------------------------
 datetime_col = next((c for c in df_taxi.columns if "일시" in c or "시간" in c), None)
 if datetime_col:
@@ -149,7 +151,7 @@ st.subheader("🗺️ 서울특별시 장애인 콜택시 수요(원) vs 공급(
 SEOUL_CENTER = [37.5665, 126.9780]
 m = folium.Map(location=SEOUL_CENTER, zoom_start=11.3, tiles="cartodbpositron")
 
-# ✅ 수요 집계
+# ✅ 1. 수요 집계 (구 단위 원)
 region_counts = df_taxi[region_col].value_counts().reset_index()
 region_counts.columns = ["region", "count"]
 
@@ -175,10 +177,18 @@ for _, row in region_counts.iterrows():
             popup=f"📍 {region}\n수요: {count}건"
         ).add_to(m)
 
-# === 수정: 공급(차고지) 정확한 위치(Geocoding) 표시 ===
+# ✅ 2. 공급(차고지) 정확한 위치(Geocoding) 표시
 if df_garage is not None:
-    # 차고지명, 주차대수 컬럼 자동 찾기
-    name_col = next((c for c in df_garage.columns if "명" in c or "차고지" in c or "센터" in c), "차고지명")
+    
+    # === 수정: '차고지명'을 '시설명'보다 우선적으로 찾도록 수정 ===
+    if '차고지명' in df_garage.columns:
+        name_col = '차고지명'
+    elif '시설명' in df_garage.columns:
+        name_col = '시설명'
+    else:
+        # 위 두 컬럼이 없을 경우, "명" 또는 "센터"가 포함된 첫 번째 컬럼을 사용
+        name_col = next((c for c in df_garage.columns if "명" in c or "센터" in c), "차고지명") # 기본값
+        
     parking_col = next((c for c in df_garage.columns if "주차" in c), None)
     
     for _, row in df_garage.iterrows():
@@ -187,15 +197,21 @@ if df_garage is not None:
         lon = row['longitude']
         
         # 팝업 텍스트 구성
-        name = str(row[name_col]) if name_col in row else "차고지"
-        popup_text = f"🚗 <b>{name}</b>"
+        name = str(row[name_col]) if pd.notna(row[name_col]) else "정보 없음"
+        popup_text = f"🚗 <b>{name}</b>" # 팝업 제목을 name_col로 설정
+        
         if parking_col and pd.notna(row[parking_col]):
-            popup_text += f"<br>주차대수: {int(row[parking_col])}대"
+            try:
+                # 주차대수 정보가 숫자일 경우
+                popup_text += f"<br>주차대수: {int(row[parking_col])}대"
+            except ValueError:
+                # 주차대수 정보가 숫자가 아닐 경우 (e.g. "10 (야간)")
+                popup_text += f"<br>주차대수: {row[parking_col]}" 
         
         folium.Marker(
             [lat, lon],
             popup=folium.Popup(popup_text, max_width=200),
-            tooltip=name,
+            tooltip=name, # 마우스 호버 시 툴팁에도 차고지명 적용
             icon=folium.Icon(color="darkblue", icon="car", prefix="fa")
         ).add_to(m)
 
