@@ -13,7 +13,7 @@ import plotly.express as px
 def load_data():
     try:
         df_taxi = pd.read_csv("seoul_taxi_SAMPLE_500.csv")
-        df_garage = pd.read_csv("서울시설공단_장애인콜택시 차고지 정보_20250724.csv")
+        df_garage = pd.read_csv("info.csv")
     except FileNotFoundError:
         st.error("🚨 CSV 파일을 찾을 수 없습니다. 파일 경로를 확인하세요.")
         return None, None
