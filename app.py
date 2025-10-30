@@ -1,4 +1,29 @@
 # app.py
+import sys, subprocess, importlib
+
+def install_if_missing(package):
+    try:
+        importlib.import_module(package)
+    except ImportError:
+        print(f"⚙️ Installing missing package: {package}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+for pkg in ["folium", "streamlit-folium", "plotly", "pandas", "numpy"]:
+    install_if_missing(pkg)
+
+# -------------------
+# 실제 코드 시작
+# -------------------
+import streamlit as st
+import pandas as pd
+import folium
+from folium.plugins import HeatMap
+from streamlit_folium import st_folium
+import plotly.express as px
+
+# (이 아래부터는 기존 대시보드 코드 그대로!)
+
+# app.py
 import streamlit as st
 import pandas as pd
 import folium
