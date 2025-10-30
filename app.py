@@ -4,6 +4,8 @@ import plotly.express as px
 import folium
 from streamlit_folium import st_folium
 from branca.colormap import linear
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
 
 # -----------------------------
 # 1. 서울시 25개 구 중심 좌표
@@ -46,13 +48,32 @@ def load_data():
         df_garage = pd.read_csv("info.csv")
         return df_taxi, df_garage
     except FileNotFoundError:
-        st.error("⚠️ CSV 파일을 불러올 수 없습니다. 경로를 확인하세요.")
+        st.error("⚠️ CSV 파일을 찾을 수 없습니다. 파일 경로를 확인하세요.")
         return None, None
 
 # -----------------------------
-# 3. Streamlit 설정
+# 3. 주소 → 위도·경도 변환 함수
 # -----------------------------
-st.set_page_config(page_title="서울시 장애인 콜택시 수요·공급 대시보드", layout="wide")
+@st.cache_data
+def geocode_addresses(addresses):
+    geolocator = Nominatim(user_agent="seoul_garages")
+    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
+    coords = {}
+    for addr in addresses:
+        try:
+            loc = geocode(addr)
+            if loc:
+                coords[addr] = (loc.latitude, loc.longitude)
+            else:
+                coords[addr] = None
+        except Exception:
+            coords[addr] = None
+    return coords
+
+# -----------------------------
+# 4. Streamlit 설정
+# -----------------------------
+st.set_page_config(page_title="서울시 장애인 콜택시 대시보드", layout="wide")
 st.title("🚕 서울특별시 장애인 콜택시 수요·공급 통합 대시보드")
 
 df_taxi, df_garage = load_data()
@@ -60,7 +81,7 @@ if df_taxi is None or df_garage is None:
     st.stop()
 
 # -----------------------------
-# 4. 데이터 전처리
+# 5. 데이터 전처리
 # -----------------------------
 datetime_col = next((c for c in df_taxi.columns if "일시" in c or "시간" in c), None)
 if datetime_col:
@@ -76,7 +97,7 @@ else:
     st.stop()
 
 # -----------------------------
-# 5. 지도 시각화 (수요 + 공급)
+# 6. 지도 생성
 # -----------------------------
 st.subheader("🗺️ 서울특별시 장애인 콜택시 수요(원) vs 공급(차고지) 지도")
 
@@ -91,7 +112,7 @@ colormap = linear.Blues_09.scale(region_counts["count"].min(), region_counts["co
 colormap.caption = "콜택시 호출 수 (수요)"
 colormap.add_to(m)
 
-# ✅ 수요 원 표시 (확대 반영)
+# ✅ 수요 원 표시
 for _, row in region_counts.iterrows():
     region = row["region"]
     count = row["count"]
@@ -109,24 +130,31 @@ for _, row in region_counts.iterrows():
             popup=f"📍 {region}\n수요: {count}건"
         ).add_to(m)
 
-# ✅ 공급(차고지) 자동 지역 매핑
-name_col = next((c for c in df_garage.columns if "명" in c or "차고지" in c or "센터" in c), None)
-for _, row in df_garage.iterrows():
-    text = " ".join(str(v) for v in row.values)  # 전체 행을 문자열로 검색
-    name = str(row[name_col]) if name_col else "차고지"
-    matched_gu = next((gu for gu in SEOUL_GU_COORDS if gu in text), None)
-    if matched_gu:
-        lat, lon = SEOUL_GU_COORDS[matched_gu]
-        folium.Marker(
-            [lat, lon],
-            popup=f"🚗 {name} ({matched_gu})",
-            icon=folium.Icon(color="darkblue", icon="car", prefix="fa")
-        ).add_to(m)
+# ✅ 공급(차고지) 표시 (주소 기반)
+if "주소" in df_garage.columns:
+    addr_list = df_garage["주소"].dropna().unique().tolist()
+    coords_dict = geocode_addresses(addr_list)
+
+    for _, row in df_garage.iterrows():
+        name = row.get("차고지명", "차고지")
+        addr = row.get("주소", "")
+        cars = row.get("주차대수", "정보없음")
+
+        coord = coords_dict.get(addr)
+        if coord:
+            lat, lon = coord
+            folium.Marker(
+                [lat, lon],
+                popup=f"🚗 {name}<br>📍 {addr}<br>🚘 주차대수: {cars}",
+                icon=folium.Icon(color="darkblue", icon="car", prefix="fa")
+            ).add_to(m)
+else:
+    st.warning("⚠️ '주소' 컬럼을 찾을 수 없습니다. 파일을 확인하세요.")
 
 st_folium(m, width=950, height=600)
 
 # -----------------------------
-# 6. 통계 시각화 (Plotly)
+# 7. 통계 시각화
 # -----------------------------
 st.subheader("📊 시간대별 / 요일별 / 지역별 수요 분석")
 
