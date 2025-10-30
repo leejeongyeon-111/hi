@@ -1,153 +1,124 @@
 # app.py
 import streamlit as st
 import pandas as pd
-import folium
-from folium.plugins import HeatMap
-from streamlit_folium import st_folium
 import plotly.express as px
+import folium
+from streamlit_folium import st_folium
 
-# -------------------------------
-# 데이터 로드 함수
-# -------------------------------
+# -----------------------------
+# 1. 데이터 불러오기
+# -----------------------------
 @st.cache_data
 def load_data():
     try:
         df_taxi = pd.read_csv("seoul_taxi_SAMPLE_500.csv")
         df_garage = pd.read_csv("info.csv")
+        return df_taxi, df_garage
     except FileNotFoundError:
-        st.error("🚨 CSV 파일을 찾을 수 없습니다. 파일 경로를 확인하세요.")
+        st.error("⚠️ 데이터를 불러오지 못했습니다. 파일 경로를 확인하세요.")
         return None, None
 
-    # 시간 관련 컬럼 감지 및 처리
-    datetime_col = None
-    for col in df_taxi.columns:
-        if "일시" in col:
-            datetime_col = col
-            break
 
-    if datetime_col:
-        df_taxi[datetime_col] = pd.to_datetime(df_taxi[datetime_col], errors="coerce")
-        df_taxi["hour"] = df_taxi[datetime_col].dt.hour
-        df_taxi["weekday"] = df_taxi[datetime_col].dt.day_name()
-        df_taxi["date"] = df_taxi[datetime_col].dt.date
-    else:
-        st.warning("⚠️ '일시'가 포함된 컬럼이 없습니다. 시간 분석이 제한됩니다.")
+# -----------------------------
+# 2. Streamlit 앱 구조
+# -----------------------------
+st.set_page_config(page_title="장애인 콜택시 수요-공급 대시보드", layout="wide")
+st.title("🚕 (서울시) 장애인 콜택시 수요-공급 통합 대시보드")
 
-    # 위경도 컬럼 이름 감지
-    lat_col = next((c for c in df_taxi.columns if "위도" in c), None)
-    lon_col = next((c for c in df_taxi.columns if "경도" in c), None)
-    if lat_col and lon_col:
-        df_taxi = df_taxi.dropna(subset=[lat_col, lon_col])
-    else:
-        st.error("🚨 위도/경도 컬럼이 없습니다.")
-        return None, None
-
-    # 컬럼명 통일
-    df_taxi = df_taxi.rename(columns={lat_col: "위도", lon_col: "경도"})
-
-    return df_taxi, df_garage
-
-# -------------------------------
-# 데이터 로드
-# -------------------------------
 df_taxi, df_garage = load_data()
 
-if df_taxi is not None:
-    # -------------------------------
-    # 사이드바 필터
-    # -------------------------------
-    st.sidebar.header("📍 필터 설정")
+if df_taxi is None or df_garage is None:
+    st.stop()
 
-    day_options = ["전체"] + sorted(df_taxi["weekday"].dropna().unique().tolist())
-    selected_day = st.sidebar.selectbox("요일 선택", day_options)
-    selected_hour = st.sidebar.slider("시간대 선택", 0, 23, (7, 9))
+# -----------------------------
+# 3. 데이터 전처리
+# -----------------------------
+# 날짜/시간 파싱
+datetime_col = next((c for c in df_taxi.columns if "일시" in c or "시간" in c), None)
+if datetime_col:
+    df_taxi[datetime_col] = pd.to_datetime(df_taxi[datetime_col], errors="coerce")
+    df_taxi["hour"] = df_taxi[datetime_col].dt.hour
+    df_taxi["weekday"] = df_taxi[datetime_col].dt.day_name()
+else:
+    st.warning("⚠️ 일시/시간 관련 컬럼이 없어 시간대 분석은 생략됩니다.")
 
-    filtered = df_taxi.copy()
-    if selected_day != "전체":
-        filtered = filtered[filtered["weekday"] == selected_day]
-    if "hour" in filtered.columns:
-        filtered = filtered[(filtered["hour"] >= selected_hour[0]) & (filtered["hour"] <= selected_hour[1])]
+# 지역명 컬럼 자동 탐색
+region_col = next((c for c in df_taxi.columns if "지역" in c or "구" in c), None)
+if region_col is None:
+    st.warning("⚠️ 지역명 관련 컬럼이 없어 지역 분석은 생략됩니다.")
+else:
+    df_taxi[region_col] = df_taxi[region_col].astype(str)
 
-    # -------------------------------
-    # 상단 KPI
-    # -------------------------------
-    st.title("🚖 서울시 장애인 콜택시 수요·공급 대시보드")
+# -----------------------------
+# 4. 시각화 — 지도
+# -----------------------------
+st.subheader("🗺️ 서울시 장애인 콜택시 현황 (기본 지도)")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("총 호출 수", f"{len(filtered):,} 건")
+SEOUL_CENTER = [37.5665, 126.9780]
+m = folium.Map(location=SEOUL_CENTER, zoom_start=11)
 
-    if "배차시간" in filtered.columns:
-        col2.metric("평균 배차시간(분)", f"{filtered['배차시간'].mean():.1f}")
-    else:
-        col2.metric("평균 배차시간(분)", "데이터 없음")
-
-    if "지역" in filtered.columns:
-        col3.metric("고유 호출 지역 수", f"{filtered['지역'].nunique():,}")
-    else:
-        col3.metric("고유 호출 지역 수", "데이터 없음")
-
-    # -------------------------------
-    # 1️⃣ 시간대별 수요 그래프
-    # -------------------------------
-    if "hour" in df_taxi.columns:
-        st.subheader("⏰ 시간대별 호출 수")
-        hourly = df_taxi.groupby("hour").size().reset_index(name="count")
-        fig_hour = px.bar(
-            hourly,
-            x="hour",
-            y="count",
-            color="count",
-            color_continuous_scale="Blues",
-            labels={"hour": "시간", "count": "호출 수"},
-        )
-        st.plotly_chart(fig_hour, use_container_width=True)
-
-    # -------------------------------
-    # 2️⃣ 요일별 수요 그래프
-    # -------------------------------
-    if "weekday" in df_taxi.columns:
-        st.subheader("📅 요일별 호출 수")
-        weekday_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        weekday = df_taxi.groupby("weekday").size().reindex(weekday_order).fillna(0).reset_index(name="count")
-        fig_day = px.bar(
-            weekday,
-            x="weekday",
-            y="count",
-            color="count",
-            color_continuous_scale="Greens",
-            labels={"weekday": "요일", "count": "호출 수"},
-        )
-        st.plotly_chart(fig_day, use_container_width=True)
-
-    # -------------------------------
-    # 3️⃣ 지도 시각화 (Heatmap + 차고지)
-    # -------------------------------
-    st.subheader("🗺️ 수요 밀집도 및 차고지 위치")
-
-    m = folium.Map(location=[37.55, 126.98], zoom_start=11, tiles="cartodb positron")
-
-    # 수요 Heatmap
-    if not filtered.empty:
-        HeatMap(filtered[["위도", "경도"]].values.tolist(), radius=10, blur=15).add_to(m)
-
-    # 차고지 마커 표시
+# 차고지 표시
+if "위도" in df_garage.columns and "경도" in df_garage.columns:
     for _, row in df_garage.iterrows():
         folium.Marker(
-            location=[row["위도"], row["경도"]],
-            popup=f"차고지명: {row['차고지명']}",
-            icon=folium.Icon(color="blue", icon="car", prefix="fa"),
+            [row["위도"], row["경도"]],
+            popup=row.get("차고지명", "차고지"),
+            icon=folium.Icon(color="blue", icon="car", prefix="fa")
         ).add_to(m)
-
-    st_map = st_folium(m, width=700, height=500)
-
-    # -------------------------------
-    # 4️⃣ 지역별 호출 TOP 10
-    # -------------------------------
-    if "지역" in df_taxi.columns:
-        st.subheader("🏙️ 지역별 호출 수 TOP 10")
-        top_region = df_taxi["지역"].value_counts().head(10).reset_index()
-        top_region.columns = ["지역", "호출 수"]
-        st.dataframe(top_region)
-
 else:
-    st.warning("⚠️ 데이터를 불러오지 못했습니다. 파일 경로를 확인하세요.")
+    folium.Marker(
+        SEOUL_CENTER,
+        popup="서울특별시 중심",
+        icon=folium.Icon(color="red", icon="info-sign")
+    ).add_to(m)
+
+st_folium(m, width=700, height=500)
+
+# -----------------------------
+# 5. 시각화 — 숫자형 요약
+# -----------------------------
+st.subheader("📊 수요 분석 대시보드")
+
+col1, col2 = st.columns(2)
+
+# (1) 요일별 수요
+if "weekday" in df_taxi.columns:
+    weekday_counts = df_taxi["weekday"].value_counts().reindex(
+        ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+        fill_value=0
+    )
+    fig1 = px.bar(
+        x=weekday_counts.index,
+        y=weekday_counts.values,
+        labels={"x": "요일", "y": "콜 수"},
+        title="요일별 콜택시 호출 수요"
+    )
+    col1.plotly_chart(fig1, use_container_width=True)
+else:
+    col1.warning("요일 데이터 없음")
+
+# (2) 시간대별 수요
+if "hour" in df_taxi.columns:
+    hour_counts = df_taxi["hour"].value_counts().sort_index()
+    fig2 = px.line(
+        x=hour_counts.index,
+        y=hour_counts.values,
+        markers=True,
+        labels={"x": "시간대", "y": "콜 수"},
+        title="시간대별 콜택시 호출 수요"
+    )
+    col2.plotly_chart(fig2, use_container_width=True)
+else:
+    col2.warning("시간대 데이터 없음")
+
+# (3) 지역별 수요 (선택)
+if region_col:
+    st.subheader("🏙️ 지역별 콜택시 호출량")
+    region_counts = df_taxi[region_col].value_counts().head(15)
+    fig3 = px.bar(
+        x=region_counts.index,
+        y=region_counts.values,
+        labels={"x": "지역", "y": "콜 수"},
+        title="상위 15개 지역별 호출량"
+    )
+    st.plotly_chart(fig3, use_container_width=True)
