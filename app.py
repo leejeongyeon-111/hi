@@ -1,17 +1,4 @@
 # app.py
-import sys, subprocess, importlib
-
-def install_if_missing(package):
-    try:
-        importlib.import_module(package)
-    except ImportError:
-        print(f"⚙️ Installing missing package: {package}")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-for pkg in ["folium", "streamlit-folium", "plotly", "pandas", "numpy"]:
-    install_if_missing(pkg)
-
-# app.py
 import streamlit as st
 import pandas as pd
 import folium
