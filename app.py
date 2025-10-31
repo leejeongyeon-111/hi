@@ -217,7 +217,7 @@ st_folium(m, width=950, height=600)
 # -----------------------------
 # 6. 통계 시각화 (Plotly)
 # -----------------------------
-st.subheader("시간대별 / 요일별 수요 분석")
+st.subheader("요일별 / 시간대별 수요 분석")
 
 col1, col2 = st.columns(2)
 
