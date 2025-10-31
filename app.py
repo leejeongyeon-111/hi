@@ -106,9 +106,6 @@ def load_data():
         # Geocoding 실패한 주소는 제외
         df_garage_geocoded = df_garage.dropna(subset=['latitude', 'longitude'])
         
-        failed_count = len(df_garage) - len(df_garage_geocoded)
-        if failed_count > 0:
-            st.warning(f"총 {len(df_garage)}개 차고지 중 {failed_count}개의 주소를 변환하지 못했습니다.")
         
         return df_taxi, df_garage_geocoded
     
